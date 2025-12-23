@@ -8,15 +8,6 @@ import pytz
 # --- CONFIGURATION ---
 FEED_URL = "https://www.mdmlingbakery.com/wp-content/uploads/rex-feed/feed-261114.xml"
 
-# List of items that are single-variant (Always appear as single price, so ignore "Range Rule")
-SINGLE_VARIANT_ITEMS = [
-    "Pandan Pineapple Balls", "Premium Kueh Bangkit", 
-    "Mixed Berry Cookies", "Hojicha Butter Cookies", 
-    "Nyonya Coconut Macadamia Cookies", "Classic Cheese Cookies",
-    "Traditional Nanyang Love Letters", "Golden Yuan Yang Love Letters",
-    "Chocolate Peanut Love Letter"
-]
-
 # --- APP LAYOUT ---
 st.set_page_config(page_title="MLB Stock Audit", page_icon="🍍")
 
@@ -30,25 +21,41 @@ if st.button("RUN AUDIT NOW", type="primary"):
         try:
             # 1. Get the Data
             response = requests.get(FEED_URL)
-            response.raise_for_status() # Check for errors
+            response.raise_for_status() 
             
             # 2. Parse the XML
             root = ET.fromstring(response.content)
-            ns = {'g': 'http://base.google.com/ns/1.0'} # Google namespace
+            
+            # Define the Google namespace (standard for merchant feeds)
+            ns = {'g': 'http://base.google.com/ns/1.0'} 
             
             oos_items = []
             
             # 3. Loop through every product in the feed
             for item in root.findall('channel/item'):
-                title = item.find('title').text
-                availability = item.find('g:availability', ns).text
+                # --- SAFETY CHECK START ---
+                # We fetch the tags first without .text to verify they exist
+                title_tag = item.find('title')
+                availability_tag = item.find('g:availability', ns)
+
+                # If a product is broken (missing title or availability), SKIP it.
+                if title_tag is None or availability_tag is None:
+                    continue
                 
-                # Clean up the name for readability
+                # Now it is safe to get the text
+                title = title_tag.text
+                availability = availability_tag.text
+                
+                # Check if text is None (empty tags)
+                if title is None or availability is None:
+                    continue
+                # --- SAFETY CHECK END ---
+                
+                # Clean up the name
                 clean_name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
                 
                 # CHECK: Is it explicitly Out of Stock?
                 if availability == 'out_of_stock':
-                    # Add to our list
                     oos_items.append({
                         "Product Name": clean_name,
                         "Status": "🔴 Out of Stock",
