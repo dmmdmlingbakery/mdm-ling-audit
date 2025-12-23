@@ -3,61 +3,68 @@ import requests
 import xml.etree.ElementTree as ET
 import pandas as pd
 import re
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Optional
 
-st.set_page_config(layout="wide")
-st.title("🛠️ Debug Mode: Mdm Ling Audit")
-
+# --- CONFIGURATION ---
 FEED_URL = "https://www.mdmlingbakery.com/wp-content/uploads/rex-feed/feed-261114.xml"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 
-if st.button("RUN DIAGNOSTIC"):
-    st.write("1. Attempting to connect to XML Feed...")
-    
-    # STEP 1: CONNECT
+# --- WATCHLIST CONFIGURATION ---
+# These are the items we MUST deep-check for "Variation Stockouts" (The Range Rule).
+WATCHLIST_KEYWORDS = [
+    "Premium Pineapple Balls", "Anchor Butter Cookies", "Red Velvet Biscoff",
+    "Pink Himalayan", "Kopi Siew Dai", "Molten Chocolate", 
+    "Chocolate Coffee", "Green Pea", "Peanut Cookies", 
+    "Almond Cookies", "Wholemeal Raisin", "Cranberry Pineapple",
+    "Elegance Reunion", "Tote of"
+]
+
+# Items to IGNORE (Single variants that are always "one price")
+SINGLE_VARIANT_IGNORE = [
+    "Pandan", "Kueh Bangkit", "Mixed Berry", "Hojicha", 
+    "Nyonya Coconut", "Classic Cheese", "Love Letter"
+]
+
+# --- HELPER FUNCTIONS ---
+
+def get_tag_text(item, tag_name_ending):
+    """Robustly finds a tag by its name, ignoring the {http...} namespace prefix."""
+    for child in item:
+        if child.tag.endswith(tag_name_ending) and child.text:
+            return child.text
+    return None
+
+def check_single_page_range_rule(url: str, product_name: str) -> Dict:
+    """Visits a product page to check if the 'Price Range' ($11 - $22) is active."""
     try:
-        response = requests.get(FEED_URL, headers=HEADERS, timeout=15)
-        st.write(f"Status Code: {response.status_code}")
-        
+        response = requests.get(url, headers=HEADERS, timeout=10)
         if response.status_code != 200:
-            st.error(f"❌ Server blocked us! Code: {response.status_code}")
-            st.stop()
-        else:
-            st.success("✅ Connection Successful!")
-            st.text(f"Received {len(response.text)} characters of data.")
-            
-    except Exception as e:
-        st.error(f"❌ Connection Failed completely: {e}")
-        st.stop()
-
-    # STEP 2: PARSE
-    st.write("2. Attempting to read XML...")
-    try:
-        # Simple cleanup
-        xml_content = re.sub(r'\sxmlns="[^"]+"', '', response.text, count=1)
-        root = ET.fromstring(xml_content)
-        st.success("✅ XML Parsing Successful!")
-    except Exception as e:
-        st.error(f"❌ XML Parsing Failed: {e}")
-        st.text("Preview of data received:")
-        st.code(response.text[:500])
-        st.stop()
-
-    # STEP 3: FIND ITEMS
-    st.write("3. counting items...")
-    items = root.findall('.//item')
-    st.write(f"Found {len(items)} items in the feed.")
-    
-    if len(items) == 0:
-        st.error("❌ No items found! The feed structure might have changed.")
-        # Print the first 10 lines of the XML structure to see what it looks like
-        st.code(response.text[:1000])
-    else:
-        st.success("✅ Found items! The logic works.")
+            return {"name": product_name, "status": "⚠️ Link Error", "details": "Could not load page"}
         
-        # Show the first item to prove it works
-        first = items[0]
-        st.write("First item data preview:")
-        for child in first:
-            st.write(f"- Tag: {child.tag} | Text: {child.text}")
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # WooCommerce Price Check
+        # We look for the price tag. If multiple variants exist, it usually shows a range.
+        price_tag = soup.find(class_='price')
+        
+        if not price_tag:
+             return {"name": product_name, "status": "🟢 In Stock", "details": "No price tag found (Safe)"}
+
+        price_text = price_tag.get_text()
+        
+        # THE RANGE RULE LOGIC:
+        # Hyphen/Dash means "Range" ($11.80 - $22.80) -> All Sizes In Stock
+        # No Hyphen means "Single Price" ($22.80) -> One Size (Fun Size) is OOS
+        has_range = '–' in price_text or '-' in price_text
+        
+        if has_range:
+            return {"name": product_name, "status": "🟢 In Stock", "details": f"Range verified: {price_text}"}
+        else:
+            return {
+                "name": product_name, 
+                "status": "⚠️ Variation OOS", 
+                "
