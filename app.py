@@ -12,44 +12,66 @@ FEED_URL = "https://www.mdmlingbakery.com/wp-content/uploads/rex-feed/feed-26111
 st.set_page_config(page_title="MLB Stock Audit", page_icon="🍍", layout="wide")
 
 st.title("🍍 Mdm Ling Bakery Stock Audit")
-st.write(f"**Target Source:** XML Feed")
 
 # Button to trigger the check
 if st.button("RUN FULL AUDIT", type="primary"):
     
     with st.spinner("Fetching live data..."):
         try:
-            # 1. Get the Data
-            response = requests.get(FEED_URL)
+            # 1. THE FIX: Add Headers to mimic a real browser
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            response = requests.get(FEED_URL, headers=headers)
             response.raise_for_status() 
             
             # 2. Parse the XML
-            root = ET.fromstring(response.content)
-            ns = {'g': 'http://base.google.com/ns/1.0'} 
+            # We strip the namespaces to make finding tags easier/more robust
+            xml_content = response.text
+            
+            # Simple hack to remove namespaces (avoid 'ns0:' issues)
+            # This makes the parser much more forgiving
+            import re
+            xml_content = re.sub(r'\sxmlns="[^"]+"', '', xml_content, count=1)
+            
+            root = ET.fromstring(xml_content)
+            
+            # Google Merchant Namespace usually uses 'g:' prefix
+            # We will handle this by looking for tags that end in 'availability'
             
             all_items = []
             
-            # 3. Loop through every product
-            for item in root.findall('channel/item'):
-                # Safety Check
-                title_tag = item.find('title')
-                availability_tag = item.find('g:availability', ns)
+            # 3. Smarter Search (Find 'item' ANYWHERE in the file)
+            items = root.findall('.//item')
+            
+            if not items:
+                # Debugging: If still empty, show us the first 500 chars of the file
+                st.error("Still no items found. Here is what the server sent back:")
+                st.code(response.text[:500])
+            
+            for item in items:
+                # Find Title
+                title = item.find('title')
+                if title is None: continue
+                title_text = title.text
 
-                if title_tag is None or availability_tag is None:
-                    continue
+                # Find Availability (Handle different namespace formats)
+                # We iterate through children to find the 'availability' tag
+                avail_text = None
+                for child in item:
+                    if 'availability' in child.tag:
+                        avail_text = child.text
+                        break
                 
-                title = title_tag.text
-                availability = availability_tag.text
-                
-                if title is None or availability is None:
+                if title_text is None or avail_text is None:
                     continue
                 
                 # Clean Name
-                clean_name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
+                clean_name = title_text.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
                 
                 # Determine Status & Sort Order
-                # We give OOS a '0' so it sorts to the top, In Stock gets '1'
-                if availability == 'out_of_stock':
+                # 0 = Top of list, 1 = Bottom of list
+                if avail_text == 'out_of_stock':
                     status_display = "🔴 Out of Stock"
                     sort_key = 0 
                 else:
@@ -59,7 +81,7 @@ if st.button("RUN FULL AUDIT", type="primary"):
                 all_items.append({
                     "Product Name": clean_name,
                     "Status": status_display,
-                    "sort_key": sort_key # Hidden column for sorting
+                    "sort_key": sort_key
                 })
 
             # 4. Process Data
@@ -69,7 +91,7 @@ if st.button("RUN FULL AUDIT", type="primary"):
                 # SORT: Put '0' (Out of Stock) at the top
                 df = df.sort_values(by=['sort_key', 'Product Name'])
                 
-                # Drop the hidden sort key so the user doesn't see it
+                # Drop the hidden sort key
                 df = df.drop(columns=['sort_key'])
 
                 # Display Stats
@@ -88,8 +110,4 @@ if st.button("RUN FULL AUDIT", type="primary"):
                 # Show the full table
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
-            else:
-                st.warning("No items found in the feed.")
-
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+            elif items:
