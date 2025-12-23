@@ -117,4 +117,17 @@ def main():
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Total Products", total)
                 col2.metric("Out of Stock", oos, delta_color="inverse")
-                col3.metric("Last Updated
+                col3.metric("Last Updated", datetime.now(TIMEZONE).strftime("%I:%M %p"))
+                
+                # 2. The Data Table
+                st.dataframe(
+                    df, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    height=800 # Taller table for easier scrolling
+                )
+            else:
+                st.warning("Feed fetched successfully, but no valid products were found.")
+
+if __name__ == "__main__":
+    main()
