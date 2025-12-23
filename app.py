@@ -104,7 +104,7 @@ if st.button("RUN FULL AUDIT", type="primary"):
                 # Show the full table
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
-elif items: 
+            elif items: 
                 st.warning("Found items in XML but failed to extract details.")
 
         except Exception as e:
