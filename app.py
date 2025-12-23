@@ -4,114 +4,117 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from datetime import datetime
 import pytz
+import re
+from typing import List, Dict, Optional
 
-# --- CONFIGURATION ---
+# --- CONSTANTS & CONFIGURATION ---
 FEED_URL = "https://www.mdmlingbakery.com/wp-content/uploads/rex-feed/feed-261114.xml"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
+TIMEZONE = pytz.timezone('Asia/Singapore')
 
-# --- APP LAYOUT ---
-st.set_page_config(page_title="MLB Stock Audit", page_icon="🍍", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(
+    page_title="MLB Stock Audit", 
+    page_icon="🍍", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-st.title("🍍 Mdm Ling Bakery Stock Audit")
+# --- BACKEND FUNCTIONS (The Logic) ---
 
-# Button to trigger the check
-if st.button("RUN FULL AUDIT", type="primary"):
+@st.cache_data(ttl=300)  # Cache data for 5 minutes to prevent spamming the server
+def fetch_feed_data(url: str) -> Optional[str]:
+    """Fetches the raw XML content from the URL."""
+    try:
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        return response.text
+    except requests.exceptions.RequestException as e:
+        st.error(f"Network Error: {e}")
+        return None
+
+def parse_xml_to_dataframe(xml_content: str) -> pd.DataFrame:
+    """Parses XML content and returns a cleaned DataFrame."""
+    # Remove namespaces to simplify parsing (Pragmatic approach)
+    xml_content = re.sub(r'\sxmlns="[^"]+"', '', xml_content, count=1)
     
-    with st.spinner("Fetching live data..."):
-        try:
-            # 1. Add Headers to mimic a real browser
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-            response = requests.get(FEED_URL, headers=headers)
-            response.raise_for_status() 
-            
-            # 2. Parse the XML (Standard Parser)
-            # We use .content so Python handles the encoding automatically
-            root = ET.fromstring(response.content)
-            
-            all_items = []
-            
-            # 3. Find 'item' ANYWHERE in the file
-            items = root.findall('.//item')
-            
-            if not items:
-                st.error("No <item> tags found in the file.")
-                st.write("First 500 chars of file:", response.text[:500])
-            
-            # 4. Universal "Fuzzy" Search
-            # We look for tags that END with 'title' or 'availability' 
-            # (ignoring 'g:', 'rss:', or '{namespace}' prefixes)
-            for item in items:
-                title_text = None
-                avail_text = None
-                
-                # Scan every single tag inside this item
-                for child in item:
-                    tag_name = child.tag.lower()
-                    
-                    # Check for Title
-                    if tag_name.endswith('title'):
-                        title_text = child.text
-                    
-                    # Check for Availability
-                    if tag_name.endswith('availability'):
-                        avail_text = child.text
-                
-                # Only add if we found the data
-                if title_text and avail_text:
-                    
-                    # Clean Name
-                    clean_name = title_text.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
-                    
-                    # Determine Status
-                    # 0 = Out of Stock (Top), 1 = In Stock (Bottom)
-                    if avail_text == 'out_of_stock':
-                        status_display = "🔴 Out of Stock"
-                        sort_key = 0 
-                    else:
-                        status_display = "🟢 In Stock"
-                        sort_key = 1
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError as e:
+        st.error(f"XML Parsing Error: {e}")
+        return pd.DataFrame()
 
-                    all_items.append({
-                        "Product Name": clean_name,
-                        "Status": status_display,
-                        "sort_key": sort_key
-                    })
+    items_data: List[Dict] = []
+    
+    # Use standard XPath to find items
+    items = root.findall('.//item')
+    
+    for item in items:
+        # Extract fields using a helper to avoid crashes if tags are missing
+        title = _get_tag_text(item, 'title')
+        availability = _get_tag_text(item, 'availability') # Looks for <g:availability> or <availability>
 
-            # 5. Process Data or Show Diagnostic Error
-            if all_items:
-                df = pd.DataFrame(all_items)
-                
-                # SORT: Put '0' (Out of Stock) at the top
-                df = df.sort_values(by=['sort_key', 'Product Name'])
-                
-                # Drop the hidden sort key
-                df = df.drop(columns=['sort_key'])
+        # Validation: Skip broken items
+        if not title or not availability:
+            continue
 
-                # Display Stats
-                total_items = len(df)
-                oos_count = len(df[df['Status'] == "🔴 Out of Stock"])
-                
-                sgt_time = datetime.now(pytz.timezone('Asia/Singapore')).strftime("%d %b %Y, %I:%M %p")
-                
-                # Summary Metrics
-                col1, col2 = st.columns(2)
-                col1.metric("Total Items Checked", total_items)
-                col2.metric("Out of Stock", oos_count, delta_color="inverse")
-                
-                st.write(f"**Audit Completed:** {sgt_time}")
-                
-                # Show the full table
-                st.dataframe(df, use_container_width=True, hide_index=True)
-                
-            else:
-                # DIAGNOSTIC MODE: If we found items but couldn't read them, show WHY.
-                st.warning("Found items but failed to extract details. Debugging info:")
-                if items:
-                    first_item = items[0]
-                    st.write("Here are the tags found in the first item:")
-                    tags_found = [child.tag for child in first_item]
-                    st.write(tags_found)
+        # Data Cleaning
+        clean_name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
+        
+        # Status Logic
+        is_oos = (availability == 'out_of_stock')
+        
+        items_data.append({
+            "Product Name": clean_name,
+            "Status": "🔴 Out of Stock" if is_oos else "🟢 In Stock",
+            "Availability": availability,  # Kept for debugging
+            "_sort_order": 0 if is_oos else 1  # Hidden sort key
+        })
+    
+    df = pd.DataFrame(items_data)
+    
+    if not df.empty:
+        # Sort: OOS first, then Alphabetical
+        df = df.sort_values(by=['_sort_order', 'Product Name'])
+        df = df.drop(columns=['_sort_order', 'Availability']) # Clean up for display
+        
+    return df
 
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
+def _get_tag_text(element: ET.Element, partial_tag_name: str) -> Optional[str]:
+    """Helper to find a tag ending with a specific name (Namespace agnostic)."""
+    for child in element:
+        if child.tag.endswith(partial_tag_name) and child.text:
+            return child.text
+    return None
+
+# --- FRONTEND (The UI) ---
+
+def main():
+    st.title("🍍 Mdm Ling Bakery Stock Audit")
+    st.markdown("### Live XML Feed Monitor")
+    
+    # Sidebar for controls
+    with st.sidebar:
+        st.header("Controls")
+        if st.button("Clear Cache & Refresh", type="primary"):
+            st.cache_data.clear()
+            st.rerun()
+            
+    # Main Execution
+    with st.spinner("Syncing with Mdm Ling servers..."):
+        raw_xml = fetch_feed_data(FEED_URL)
+        
+        if raw_xml:
+            df = parse_xml_to_dataframe(raw_xml)
+            
+            if not df.empty:
+                # 1. Metric Cards
+                total = len(df)
+                oos = len(df[df['Status'] == "🔴 Out of Stock"])
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total Products", total)
+                col2.metric("Out of Stock", oos, delta_color="inverse")
+                col3.metric("Last Updated
