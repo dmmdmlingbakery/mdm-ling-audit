@@ -19,7 +19,7 @@ if st.button("RUN FULL AUDIT", type="primary"):
     
     with st.spinner("Fetching live data..."):
         try:
-            # 1. THE FIX: Add Headers to mimic a real browser
+            # 1. Add Headers to mimic a real browser
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
@@ -29,18 +29,18 @@ if st.button("RUN FULL AUDIT", type="primary"):
             # 2. Parse the XML
             xml_content = response.text
             
-            # Simple hack to remove namespaces (avoid 'ns0:' issues)
+            # Remove namespaces to avoid parsing errors
             xml_content = re.sub(r'\sxmlns="[^"]+"', '', xml_content, count=1)
             
             root = ET.fromstring(xml_content)
             
             all_items = []
             
-            # 3. Smarter Search (Find 'item' ANYWHERE in the file)
+            # 3. Find 'item' ANYWHERE in the file
             items = root.findall('.//item')
             
             if not items:
-                st.error("Still no items found. Here is what the server sent back:")
+                st.error("No items found. Server response:")
                 st.code(response.text[:500])
             
             for item in items:
@@ -50,7 +50,7 @@ if st.button("RUN FULL AUDIT", type="primary"):
                     continue
                 title_text = title.text
 
-                # Find Availability (Handle different namespace formats)
+                # Find Availability
                 avail_text = None
                 for child in item:
                     if 'availability' in child.tag:
@@ -64,26 +64,8 @@ if st.button("RUN FULL AUDIT", type="primary"):
                 clean_name = title_text.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
                 
                 # Determine Status & Sort Order
-                # 0 = Top of list (Out of Stock), 1 = Bottom of list (In Stock)
+                # 0 = Out of Stock (Top), 1 = In Stock (Bottom)
                 if avail_text == 'out_of_stock':
                     status_display = "🔴 Out of Stock"
                     sort_key = 0 
                 else:
-                    status_display = "🟢 In Stock"
-                    sort_key = 1
-
-                all_items.append({
-                    "Product Name": clean_name,
-                    "Status": status_display,
-                    "sort_key": sort_key
-                })
-
-            # 4. Process Data
-            if all_items:
-                df = pd.DataFrame(all_items)
-                
-                # SORT: Put '0' (Out of Stock) at the top
-                df = df.sort_values(by=['sort_key', 'Product Name'])
-                
-                # Drop the hidden sort key
-                df = df.drop(columns=['sort_
