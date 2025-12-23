@@ -12,15 +12,9 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 
-# --- WATCHLIST ---
-WATCHLIST_KEYWORDS = [
-    "Premium Pineapple Balls", "Anchor Butter Cookies", "Red Velvet Biscoff",
-    "Pink Himalayan", "Kopi Siew Dai", "Molten Chocolate", 
-    "Chocolate Coffee", "Green Pea", "Peanut Cookies", 
-    "Almond Cookies", "Wholemeal Raisin", "Cranberry Pineapple",
-    "Elegance Reunion", "Tote of"
-]
-
+# --- IGNORE LIST (Single Variants) ---
+# We ONLY skip these because you confirmed they have no size options.
+# EVERYTHING ELSE will be deep scanned.
 SINGLE_VARIANT_IGNORE = [
     "Pandan", "Kueh Bangkit", "Mixed Berry", "Hojicha", 
     "Nyonya Coconut", "Classic Cheese", "Love Letter"
@@ -44,6 +38,7 @@ def check_real_variation_stock(url: str, product_name: str):
         soup = BeautifulSoup(response.content, 'html.parser')
         form = soup.find('form', class_='variations_form')
         
+        # If no variation form is found, it's a Simple Product (Single Variant)
         if not form:
             return {"status": "🟢 In Stock", "details": "Verified (Simple Product)"}
         
@@ -77,18 +72,17 @@ def check_real_variation_stock(url: str, product_name: str):
 
 st.set_page_config(page_title="MLB Stock Audit", page_icon="🍍", layout="wide")
 st.title("🍍 Mdm Ling Bakery Stock Audit")
-st.markdown("### 🚀 Live Stock Monitor")
+st.markdown("### 🚀 Live Stock Monitor (Deep Scan All)")
 
-if st.button("RUN AUDIT", type="primary"):
+if st.button("RUN FULL AUDIT", type="primary"):
     
-    with st.spinner("Scanning Mdm Ling Feed..."):
+    with st.spinner("Scanning Feed & Visiting Product Pages..."):
         try:
             # 1. Fetch XML
             response = requests.get(FEED_URL, headers=HEADERS, timeout=20)
             root = ET.fromstring(response.content)
             items = root.findall('.//item')
             
-            # Use a Dictionary to remove duplicates automatically (Key = URL)
             unique_products = {}
             deep_check_queue = []
             
@@ -104,7 +98,6 @@ if st.button("RUN AUDIT", type="primary"):
                 name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
                 name = name.split(" - Fun Size")[0].split(" - Standard Size")[0]
                 
-                # De-duplication check
                 if link in unique_products:
                     continue
 
@@ -116,11 +109,10 @@ if st.button("RUN AUDIT", type="primary"):
                     status = "🔴 Out of Stock"
                     sort_order = 0
                 else:
-                    # Watchlist Check
-                    is_watchlist = any(k in name for k in WATCHLIST_KEYWORDS)
+                    # LOGIC CHANGE: Check EVERYTHING unless it's explicitly ignored
                     is_ignored = any(k in name for k in SINGLE_VARIANT_IGNORE)
                     
-                    if is_watchlist and not is_ignored:
+                    if not is_ignored:
                         status = "⏳ Checking..."
                         deep_check_queue.append({"url": link, "name": name})
                 
@@ -135,23 +127,22 @@ if st.button("RUN AUDIT", type="primary"):
             # 3. Run Deep Checks
             if deep_check_queue:
                 msg = st.empty()
-                msg.info(f"🔍 Checking {len(deep_check_queue)} watchlist items for missing sizes...")
+                # Increased workers to 12 to handle the larger volume of pages faster
+                msg.info(f"🔍 Deep scanning {len(deep_check_queue)} products...")
                 
-                with ThreadPoolExecutor(max_workers=8) as executor:
-                    # Map the FUTURE to the URL (String)
+                with ThreadPoolExecutor(max_workers=12) as executor:
                     futures = {executor.submit(check_real_variation_stock, c['url'], c['name']): c['url'] for c in deep_check_queue}
                     
                     for future in futures:
-                        url_key = futures[future]  # <--- THIS IS THE FIX (Retrieve URL string)
-                        result = future.result()   # <--- Retrieve the result dictionary
+                        url_key = futures[future]
+                        result = future.result()
                         
-                        # Update the unique product list
                         if url_key in unique_products:
                             unique_products[url_key]['Status'] = result['status']
                             unique_products[url_key]['Details'] = result['details']
                             
                             if "Partial" in result['status']:
-                                unique_products[url_key]['_sort'] = 1 # Orange Priority
+                                unique_products[url_key]['_sort'] = 1 
                             elif "In Stock" in result['status']:
                                 unique_products[url_key]['_sort'] = 2
                 msg.empty()
@@ -162,7 +153,6 @@ if st.button("RUN AUDIT", type="primary"):
             if not df.empty:
                 df = df.sort_values(by=['_sort', 'Product Name'])
                 
-                # Counts
                 total = len(df)
                 oos_global = len(df[df['Status'] == "🔴 Out of Stock"])
                 oos_partial = len(df[df['Status'] == "⚠️ Partial Stockout"])
