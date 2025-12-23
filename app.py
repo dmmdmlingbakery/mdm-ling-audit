@@ -4,7 +4,6 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from datetime import datetime
 import pytz
-import re
 
 # --- CONFIGURATION ---
 FEED_URL = "https://www.mdmlingbakery.com/wp-content/uploads/rex-feed/feed-261114.xml"
@@ -26,13 +25,9 @@ if st.button("RUN FULL AUDIT", type="primary"):
             response = requests.get(FEED_URL, headers=headers)
             response.raise_for_status() 
             
-            # 2. Parse the XML
-            xml_content = response.text
-            
-            # Remove namespaces to avoid parsing errors
-            xml_content = re.sub(r'\sxmlns="[^"]+"', '', xml_content, count=1)
-            
-            root = ET.fromstring(xml_content)
+            # 2. Parse the XML (Standard Parser)
+            # We use .content so Python handles the encoding automatically
+            root = ET.fromstring(response.content)
             
             all_items = []
             
@@ -40,45 +35,50 @@ if st.button("RUN FULL AUDIT", type="primary"):
             items = root.findall('.//item')
             
             if not items:
-                st.error("No items found. Server response:")
-                st.code(response.text[:500])
+                st.error("No <item> tags found in the file.")
+                st.write("First 500 chars of file:", response.text[:500])
             
+            # 4. Universal "Fuzzy" Search
+            # We look for tags that END with 'title' or 'availability' 
+            # (ignoring 'g:', 'rss:', or '{namespace}' prefixes)
             for item in items:
-                # Find Title
-                title = item.find('title')
-                if title is None: 
-                    continue
-                title_text = title.text
-
-                # Find Availability
+                title_text = None
                 avail_text = None
+                
+                # Scan every single tag inside this item
                 for child in item:
-                    if 'availability' in child.tag:
+                    tag_name = child.tag.lower()
+                    
+                    # Check for Title
+                    if tag_name.endswith('title'):
+                        title_text = child.text
+                    
+                    # Check for Availability
+                    if tag_name.endswith('availability'):
                         avail_text = child.text
-                        break
                 
-                if title_text is None or avail_text is None:
-                    continue
-                
-                # Clean Name
-                clean_name = title_text.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
-                
-                # Determine Status & Sort Order
-                # 0 = Out of Stock (Top), 1 = In Stock (Bottom)
-                if avail_text == 'out_of_stock':
-                    status_display = "🔴 Out of Stock"
-                    sort_key = 0 
-                else:
-                    status_display = "🟢 In Stock"
-                    sort_key = 1
+                # Only add if we found the data
+                if title_text and avail_text:
+                    
+                    # Clean Name
+                    clean_name = title_text.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
+                    
+                    # Determine Status
+                    # 0 = Out of Stock (Top), 1 = In Stock (Bottom)
+                    if avail_text == 'out_of_stock':
+                        status_display = "🔴 Out of Stock"
+                        sort_key = 0 
+                    else:
+                        status_display = "🟢 In Stock"
+                        sort_key = 1
 
-                all_items.append({
-                    "Product Name": clean_name,
-                    "Status": status_display,
-                    "sort_key": sort_key
-                })
+                    all_items.append({
+                        "Product Name": clean_name,
+                        "Status": status_display,
+                        "sort_key": sort_key
+                    })
 
-            # 4. Process Data
+            # 5. Process Data or Show Diagnostic Error
             if all_items:
                 df = pd.DataFrame(all_items)
                 
@@ -104,8 +104,14 @@ if st.button("RUN FULL AUDIT", type="primary"):
                 # Show the full table
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
-            elif items: 
-                st.warning("Found items in XML but failed to extract details.")
+            else:
+                # DIAGNOSTIC MODE: If we found items but couldn't read them, show WHY.
+                st.warning("Found items but failed to extract details. Debugging info:")
+                if items:
+                    first_item = items[0]
+                    st.write("Here are the tags found in the first item:")
+                    tags_found = [child.tag for child in first_item]
+                    st.write(tags_found)
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
