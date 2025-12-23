@@ -67,4 +67,126 @@ def check_single_page_range_rule(url: str, product_name: str) -> Dict:
             return {
                 "name": product_name, 
                 "status": "⚠️ Variation OOS", 
-                "
+                "details": f"Single Price Only: {price_text}"
+            }
+            
+    except Exception:
+        return {"name": product_name, "status": "⚠️ Check Failed", "details": "Timeout/Error"}
+
+# --- MAIN APP LOGIC ---
+
+st.set_page_config(page_title="MLB Stock Audit", page_icon="🍍", layout="wide")
+st.title("🍍 Mdm Ling Bakery Stock Audit")
+st.markdown("### Hybrid Monitor: XML Feed + Deep Variation Check")
+
+if st.button("RUN FULL AUDIT", type="primary"):
+    
+    with st.spinner("Fetching XML Feed & Analyzing Stock..."):
+        try:
+            # 1. Fetch XML
+            response = requests.get(FEED_URL, headers=HEADERS, timeout=20)
+            response.raise_for_status()
+            
+            # 2. Parse XML
+            root = ET.fromstring(response.content)
+            items = root.findall('.//item')
+            
+            items_data = []
+            deep_check_candidates = [] # Queue for items needing deep scrape
+            
+            # 3. Process Items
+            for item in items:
+                # Use our robust helper to find tags despite namespaces
+                title = get_tag_text(item, 'title')
+                availability = get_tag_text(item, 'availability')
+                link = get_tag_text(item, 'link')
+                
+                if not title or not availability:
+                    continue
+                
+                # Clean Product Name
+                name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
+                
+                # Determine Initial Status
+                status_display = "🟢 In Stock"
+                sort_order = 2 # 0=OOS, 1=Variation OOS, 2=In Stock
+                details = "XML Feed Verified"
+                
+                if 'out_of_stock' in availability:
+                    status_display = "🔴 Out of Stock"
+                    sort_order = 0
+                else:
+                    # It says "In Stock", but is it on our Watchlist?
+                    is_watchlist = any(k in name for k in WATCHLIST_KEYWORDS)
+                    is_ignored = any(k in name for k in SINGLE_VARIANT_IGNORE)
+                    
+                    if is_watchlist and not is_ignored and link:
+                        # Queue this item for a Deep Check
+                        deep_check_candidates.append({"name": name, "url": link})
+                        status_display = "⏳ Checking..." # Temporary placeholder
+                
+                items_data.append({
+                    "Product Name": name,
+                    "Status": status_display,
+                    "Details": details,
+                    "URL": link,
+                    "_sort_order": sort_order
+                })
+            
+            # 4. Run Deep Checks (Parallel Scraping)
+            if deep_check_candidates:
+                status_msg = st.empty()
+                status_msg.info(f"⚡ Deep checking {len(deep_check_candidates)} items for hidden variation stockouts...")
+                
+                # Run up to 8 checks at once for speed
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = {executor.submit(check_single_page_range_rule, c['url'], c['name']): c['name'] for c in deep_check_candidates}
+                    
+                    for future in futures:
+                        result = future.result()
+                        
+                        # Update the main data list with the deep check result
+                        for row in items_data:
+                            if row['Product Name'] == result['name']:
+                                row['Status'] = result['status']
+                                row['Details'] = result['details']
+                                
+                                # Re-sort based on new status
+                                if "Variation OOS" in result['status']:
+                                    row['_sort_order'] = 1
+                                elif "In Stock" in result['status']:
+                                    row['_sort_order'] = 2
+                                break
+                status_msg.empty()
+
+            # 5. Display Results
+            if items_data:
+                df = pd.DataFrame(items_data)
+                
+                # Sort: Global OOS -> Variation OOS -> In Stock
+                df = df.sort_values(by=['_sort_order', 'Product Name'])
+                
+                # Metrics
+                total = len(df)
+                oos = len(df[df['Status'] == "🔴 Out of Stock"])
+                var_oos = len(df[df['Status'].str.contains("Variation")])
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Products", total)
+                c2.metric("Global OOS", oos, delta_color="inverse")
+                c3.metric("Variation OOS", var_oos, delta_color="inverse")
+                
+                st.dataframe(
+                    df[['Product Name', 'Status', 'Details', 'URL']],
+                    use_container_width=True, 
+                    hide_index=True,
+                    height=800,
+                    column_config={
+                        "URL": st.column_config.LinkColumn("Product Link", display_text="🔗 Visit")
+                    }
+                )
+            else:
+                st.error("No items processed.")
+
+        except Exception as e:
+            st.error(f"Critical Error: {e}")
