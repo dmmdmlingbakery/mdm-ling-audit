@@ -100,11 +100,11 @@ if st.button("RUN AUDIT", type="primary"):
                 
                 if not title or not availability or not link: continue
                 
-                # CLEANUP NAMES: Remove "Fun Size", "Standard Size" to just get the Main Name
+                # CLEANUP NAMES
                 name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
                 name = name.split(" - Fun Size")[0].split(" - Standard Size")[0]
                 
-                # If we already have this product (by URL), skip it! (De-duplication)
+                # De-duplication check
                 if link in unique_products:
                     continue
 
@@ -138,11 +138,12 @@ if st.button("RUN AUDIT", type="primary"):
                 msg.info(f"🔍 Checking {len(deep_check_queue)} watchlist items for missing sizes...")
                 
                 with ThreadPoolExecutor(max_workers=8) as executor:
+                    # Map the FUTURE to the URL (String)
                     futures = {executor.submit(check_real_variation_stock, c['url'], c['name']): c['url'] for c in deep_check_queue}
                     
                     for future in futures:
-                        url_key = future.result()
-                        result = future.result()
+                        url_key = futures[future]  # <--- THIS IS THE FIX (Retrieve URL string)
+                        result = future.result()   # <--- Retrieve the result dictionary
                         
                         # Update the unique product list
                         if url_key in unique_products:
@@ -157,27 +158,31 @@ if st.button("RUN AUDIT", type="primary"):
 
             # 4. Display
             df = pd.DataFrame(list(unique_products.values()))
-            df = df.sort_values(by=['_sort', 'Product Name'])
             
-            # Counts
-            total = len(df)
-            oos_global = len(df[df['Status'] == "🔴 Out of Stock"])
-            oos_partial = len(df[df['Status'] == "⚠️ Partial Stockout"])
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Unique Products", total)
-            c2.metric("Fully Sold Out", oos_global, delta_color="inverse")
-            c3.metric("Missing One Size", oos_partial, delta_color="off")
+            if not df.empty:
+                df = df.sort_values(by=['_sort', 'Product Name'])
+                
+                # Counts
+                total = len(df)
+                oos_global = len(df[df['Status'] == "🔴 Out of Stock"])
+                oos_partial = len(df[df['Status'] == "⚠️ Partial Stockout"])
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Unique Products", total)
+                c2.metric("Fully Sold Out", oos_global, delta_color="inverse")
+                c3.metric("Missing One Size", oos_partial, delta_color="off")
 
-            st.dataframe(
-                df[['Product Name', 'Status', 'Details', 'URL']],
-                use_container_width=True,
-                hide_index=True,
-                height=800,
-                column_config={
-                    "URL": st.column_config.LinkColumn("Link", display_text="🔗 Visit")
-                }
-            )
+                st.dataframe(
+                    df[['Product Name', 'Status', 'Details', 'URL']],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=800,
+                    column_config={
+                        "URL": st.column_config.LinkColumn("Link", display_text="🔗 Visit")
+                    }
+                )
+            else:
+                st.warning("No products found in feed.")
 
         except Exception as e:
             st.error(f"Error: {e}")
