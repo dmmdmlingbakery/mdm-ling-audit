@@ -22,9 +22,9 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- BACKEND FUNCTIONS (The Logic) ---
+# --- BACKEND FUNCTIONS ---
 
-@st.cache_data(ttl=300)  # Cache data for 5 minutes to prevent spamming the server
+@st.cache_data(ttl=300)
 def fetch_feed_data(url: str) -> Optional[str]:
     """Fetches the raw XML content from the URL."""
     try:
@@ -36,8 +36,8 @@ def fetch_feed_data(url: str) -> Optional[str]:
         return None
 
 def parse_xml_to_dataframe(xml_content: str) -> pd.DataFrame:
-    """Parses XML content and returns a cleaned DataFrame."""
-    # Remove namespaces to simplify parsing (Pragmatic approach)
+    """Parses XML content and returns a cleaned DataFrame with URLs."""
+    # Remove namespaces
     xml_content = re.sub(r'\sxmlns="[^"]+"', '', xml_content, count=1)
     
     try:
@@ -47,62 +47,55 @@ def parse_xml_to_dataframe(xml_content: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     items_data: List[Dict] = []
-    
-    # Use standard XPath to find items
     items = root.findall('.//item')
     
     for item in items:
-        # Extract fields using a helper to avoid crashes if tags are missing
+        # Extract fields
         title = _get_tag_text(item, 'title')
-        availability = _get_tag_text(item, 'availability') # Looks for <g:availability> or <availability>
+        availability = _get_tag_text(item, 'availability')
+        link = _get_tag_text(item, 'link') # <--- NEW: Extract the URL
 
-        # Validation: Skip broken items
         if not title or not availability:
             continue
 
-        # Data Cleaning
         clean_name = title.replace(" - Mdm Ling Bakery", "").replace("[CNY 2026]", "").strip()
-        
-        # Status Logic
         is_oos = (availability == 'out_of_stock')
         
         items_data.append({
             "Product Name": clean_name,
             "Status": "🔴 Out of Stock" if is_oos else "🟢 In Stock",
-            "Availability": availability,  # Kept for debugging
-            "_sort_order": 0 if is_oos else 1  # Hidden sort key
+            "URL": link, # <--- NEW: Add to data
+            "_sort_order": 0 if is_oos else 1
         })
     
     df = pd.DataFrame(items_data)
     
     if not df.empty:
-        # Sort: OOS first, then Alphabetical
+        # Sort: OOS first
         df = df.sort_values(by=['_sort_order', 'Product Name'])
-        df = df.drop(columns=['_sort_order', 'Availability']) # Clean up for display
+        df = df.drop(columns=['_sort_order'])
         
     return df
 
 def _get_tag_text(element: ET.Element, partial_tag_name: str) -> Optional[str]:
-    """Helper to find a tag ending with a specific name (Namespace agnostic)."""
+    """Helper to find a tag ending with a specific name."""
     for child in element:
         if child.tag.endswith(partial_tag_name) and child.text:
-            return child.text
+            return child.text.strip()
     return None
 
-# --- FRONTEND (The UI) ---
+# --- FRONTEND ---
 
 def main():
     st.title("🍍 Mdm Ling Bakery Stock Audit")
     st.markdown("### Live XML Feed Monitor")
     
-    # Sidebar for controls
     with st.sidebar:
         st.header("Controls")
         if st.button("Clear Cache & Refresh", type="primary"):
             st.cache_data.clear()
             st.rerun()
             
-    # Main Execution
     with st.spinner("Syncing with Mdm Ling servers..."):
         raw_xml = fetch_feed_data(FEED_URL)
         
@@ -110,7 +103,7 @@ def main():
             df = parse_xml_to_dataframe(raw_xml)
             
             if not df.empty:
-                # 1. Metric Cards
+                # Metrics
                 total = len(df)
                 oos = len(df[df['Status'] == "🔴 Out of Stock"])
                 
@@ -119,15 +112,22 @@ def main():
                 col2.metric("Out of Stock", oos, delta_color="inverse")
                 col3.metric("Last Updated", datetime.now(TIMEZONE).strftime("%I:%M %p"))
                 
-                # 2. The Data Table
+                # The Data Table with Clickable Links
                 st.dataframe(
                     df, 
                     use_container_width=True, 
                     hide_index=True,
-                    height=800 # Taller table for easier scrolling
+                    height=800,
+                    column_config={
+                        "URL": st.column_config.LinkColumn(
+                            "Product Link",
+                            help="Click to visit product page",
+                            display_text="🔗 Visit Page"
+                        )
+                    }
                 )
             else:
-                st.warning("Feed fetched successfully, but no valid products were found.")
+                st.warning("Feed fetched, but no valid products found.")
 
 if __name__ == "__main__":
     main()
